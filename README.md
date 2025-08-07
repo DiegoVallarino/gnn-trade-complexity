@@ -20,7 +20,7 @@ The approach is tailored for **small open economies** under conditions of global
 
 ## Files
 
-- `GNN_Trade_Complexity_Pipeline.ipynb`: Complete, executable notebook with all model steps.
+- `python_code`: Complete, executable notebook with all model steps.
 
 ---
 
