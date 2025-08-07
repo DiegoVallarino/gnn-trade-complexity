@@ -1,0 +1,248 @@
+# GNN-Based Trade Diversification Pipeline for Small Open Economies
+# Author: Diego Vallarino
+# Institution: Inter-American Development Bank (IDB)
+# Version: Full Python Implementation (GNN + GAN + Explainability)
+
+# ==============================
+# 1. Install Dependencies
+# ==============================
+!pip install torch torchvision torchaudio --quiet
+!pip install torch-scatter torch-sparse torch-geometric captum -f https://data.pyg.org/whl/torch-2.0.0+cpu.html --quiet
+!pip install matplotlib seaborn pandas scikit-learn networkx --quiet
+
+# ==============================
+# 2. Import Packages
+# ==============================
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch_geometric.data import Data
+from torch_geometric.nn import GCNConv
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import networkx as nx
+
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import mean_squared_error, r2_score
+from sklearn.model_selection import train_test_split
+from sklearn.decomposition import PCA
+
+from captum.attr import IntegratedGradients
+
+# Set random seed
+torch.manual_seed(42)
+np.random.seed(42)
+
+# ==============================
+# 3. Load and Prepare Data (User Input Required)
+# ==============================
+"""
+Data should be extracted from publicly available sources such as:
+- CEPII BACI database (HS-6 bilateral trade flows)
+- World Bank (macroeconomic indicators)
+- OECD STAN / UNESCO (sectoral R&D intensity)
+- Atlas of Economic Complexity (PCI scores)
+
+Users must prepare the following:
+- Trade matrix with export values by country-product-year
+- PCI scores per product
+- Macroeconomic features per country
+- Product proximity matrix
+
+This notebook assumes you already filtered the export matrix with RCA >= 1 and generated node features.
+"""
+
+# Load your own datasets here
+df_exports = pd.read_csv("your_exports.csv")          # Columns: country, product, year, export_value
+pci_df = pd.read_csv("your_pci.csv")                  # Columns: product, pci
+macro_df = pd.read_csv("your_macro.csv")              # Columns: country, gdp, fdi, inflation, population
+proximity_df = pd.read_csv("your_proximity.csv")      # Optional: Columns: product_a, product_b, proximity
+
+# ==============================
+# 4. Preprocess Data and Construct Graph
+# ==============================
+df = df_exports[df_exports['year'] == 2020]
+
+total_exports = df['export_value'].sum()
+df_grouped = df.groupby(['country', 'product']).agg({'export_value': 'sum'}).reset_index()
+df_grouped['country_total'] = df_grouped.groupby('country')['export_value'].transform('sum')
+df_grouped['product_total'] = df_grouped.groupby('product')['export_value'].transform('sum')
+df_grouped['RCA'] = (df_grouped['export_value'] / df_grouped['country_total']) / (df_grouped['product_total'] / total_exports)
+
+edges = df_grouped[df_grouped['RCA'] >= 1][['country', 'product']].copy()
+countries = edges['country'].unique()
+products = edges['product'].unique()
+node_index = {name: i for i, name in enumerate(np.concatenate([countries, products]))}
+
+edges['source'] = edges['country'].map(node_index)
+edges['target'] = edges['product'].map(node_index)
+edge_index = torch.tensor(edges[['source', 'target']].values.T, dtype=torch.long)
+
+nodes = list(node_index.keys())
+features = []
+for node in nodes:
+    if node in pci_df['product'].values:
+        pci = pci_df[pci_df['product'] == node]['pci'].values[0]
+        related = proximity_df[(proximity_df['product_a'] == node) | (proximity_df['product_b'] == node)]['proximity'].mean()
+        features.append([pci, related])
+    elif node in macro_df['country'].values:
+        row = macro_df[macro_df['country'] == node][['gdp', 'fdi', 'inflation', 'population']].values.flatten()
+        features.append(list(row))
+    else:
+        features.append([0] * 4)
+
+X = StandardScaler().fit_transform(pd.DataFrame(features).fillna(0))
+x = torch.tensor(X, dtype=torch.float)
+data = Data(x=x, edge_index=edge_index)
+
+# ==============================
+# 5. GCN Model Definition and Training
+# ==============================
+class GCN(nn.Module):
+    def __init__(self, input_dim, hidden_dim, output_dim):
+        super(GCN, self).__init__()
+        self.conv1 = GCNConv(input_dim, hidden_dim)
+        self.conv2 = GCNConv(hidden_dim, output_dim)
+
+    def forward(self, x, edge_index):
+        x = self.conv1(x, edge_index)
+        x = F.relu(x)
+        x = self.conv2(x, edge_index)
+        return x
+
+model = GCN(input_dim=data.num_features, hidden_dim=32, output_dim=1)
+optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
+criterion = nn.MSELoss()
+
+labels = []
+for node in nodes:
+    if node in pci_df['product'].values:
+        labels.append(pci_df[pci_df['product'] == node]['pci'].values[0])
+    else:
+        labels.append(0)
+y = torch.tensor(labels, dtype=torch.float).view(-1, 1)
+
+losses = []
+for epoch in range(100):
+    model.train()
+    optimizer.zero_grad()
+    out = model(data.x, data.edge_index)
+    loss = criterion(out, y)
+    loss.backward()
+    optimizer.step()
+    losses.append(loss.item())
+    if epoch % 10 == 0:
+        print(f"Epoch {epoch}, Loss: {loss.item():.4f}")
+
+# ==============================
+# 6. Visualize GNN Outputs and Training Diagnostics
+# ==============================
+model.eval()
+with torch.no_grad():
+    embeddings = model(data.x, data.edge_index).numpy()
+
+pca = PCA(n_components=2)
+embeddings_2d = pca.fit_transform(embeddings)
+
+embedding_df = pd.DataFrame(embeddings_2d, columns=["x", "y"])
+embedding_df['node'] = nodes
+embedding_df['type'] = embedding_df['node'].apply(lambda n: 'country' if n in countries else 'product')
+embedding_df['PCI'] = [pci_df[pci_df['product'] == n]['pci'].values[0] if n in pci_df['product'].values else np.nan for n in embedding_df['node']]
+
+plt.figure(figsize=(12, 8))
+sns.scatterplot(data=embedding_df, x="x", y="y", hue="type", size="PCI", sizes=(10, 200), alpha=0.7)
+plt.title("GNN Embeddings: Countries vs Products")
+plt.show()
+
+plt.figure(figsize=(8, 4))
+plt.plot(losses)
+plt.title("Loss Evolution During GNN Training")
+plt.xlabel("Epoch")
+plt.ylabel("MSE Loss")
+plt.grid(True)
+plt.show()
+
+# ==============================
+# 7. Explainability with Integrated Gradients
+# ==============================
+ig = IntegratedGradients(model)
+model.eval()
+attributions, _ = ig.attribute(inputs=data.x, target=0, additional_forward_args=(data.edge_index,), return_convergence_delta=True)
+
+attribution_scores = attributions.abs().mean(dim=0).detach().numpy()
+feature_names = [f"feature_{i}" for i in range(data.x.shape[1])]
+
+plt.figure(figsize=(8, 5))
+sns.barplot(x=attribution_scores, y=feature_names)
+plt.title("Average Feature Attribution via Integrated Gradients")
+plt.xlabel("Attribution Score")
+plt.ylabel("Feature")
+plt.grid(True)
+plt.show()
+
+# ==============================
+# 8. Optional: GAN Simulation of Trade Disruptions
+# ==============================
+class Generator(nn.Module):
+    def __init__(self, latent_dim, output_dim):
+        super().__init__()
+        self.fc1 = nn.Linear(latent_dim, 64)
+        self.fc2 = nn.Linear(64, output_dim)
+
+    def forward(self, z):
+        z = F.relu(self.fc1(z))
+        return torch.sigmoid(self.fc2(z))
+
+class Discriminator(nn.Module):
+    def __init__(self, input_dim):
+        super().__init__()
+        self.fc1 = nn.Linear(input_dim, 64)
+        self.fc2 = nn.Linear(64, 1)
+
+    def forward(self, x):
+        x = F.relu(self.fc1(x))
+        return torch.sigmoid(self.fc2(x))
+
+# Example: Simulate synthetic trade matrix based on PCA-reduced node embeddings
+latent_dim = 16
+real_data = torch.tensor(pca.transform(data.x.numpy()), dtype=torch.float)
+
+gen = Generator(latent_dim, real_data.shape[1])
+disc = Discriminator(real_data.shape[1])
+
+optim_gen = torch.optim.Adam(gen.parameters(), lr=0.001)
+optim_disc = torch.optim.Adam(disc.parameters(), lr=0.001)
+
+loss_fn = nn.BCELoss()
+epochs = 100
+for epoch in range(epochs):
+    z = torch.randn(real_data.size(0), latent_dim)
+    fake_data = gen(z)
+    real_labels = torch.ones(real_data.size(0), 1)
+    fake_labels = torch.zeros(real_data.size(0), 1)
+
+    disc.zero_grad()
+    loss_real = loss_fn(disc(real_data), real_labels)
+    loss_fake = loss_fn(disc(fake_data.detach()), fake_labels)
+    loss_disc = loss_real + loss_fake
+    loss_disc.backward()
+    optim_disc.step()
+
+    gen.zero_grad()
+    loss_gen = loss_fn(disc(fake_data), real_labels)
+    loss_gen.backward()
+    optim_gen.step()
+
+    if epoch % 20 == 0:
+        print(f"GAN Epoch {epoch}, Disc Loss: {loss_disc.item():.4f}, Gen Loss: {loss_gen.item():.4f}")
+
+# ==============================
+# 9. Export Predicted ECI Scores
+# ==============================
+embedding_df["predicted_ECI"] = embeddings.flatten()
+top_candidates = embedding_df[(embedding_df['type'] == 'product') & (embedding_df['PCI'] > 1)].sort_values("predicted_ECI", ascending=False).head(10)
+print("\nTop 10 Strategic Products:")
+print(top_candidates[['node', 'PCI', 'predicted_ECI']])
