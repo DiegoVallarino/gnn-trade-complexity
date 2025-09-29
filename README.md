@@ -104,6 +104,7 @@ Vallarino, D. (2025). Augmenting trade complexity analysis with deep learning: a
 For questions or collaboration:
 - Email: diego.vallarino@gmail.com
 - ORCID: https://orcid.org/0009-0003-9166-1874
+- site: www.diegovallarino.com
 
 ---
 
