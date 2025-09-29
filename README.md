@@ -1,6 +1,6 @@
 # gnn-trade-complexity
 
-**Code companion for the paper**: *Augmenting Trade Complexity Analysis with Deep Learning: An AI-Based Framework for Small Open Economies*  
+**Code companion for the paper**: *Vallarino, D. (2025). Augmenting trade complexity analysis with deep learning: an AI-based framework for small open economies. Applied Economics Letters, 1–4. https://doi.org/10.1080/13504851.2025.2567618*  
 **Author**: Diego Vallarino, Inter-American Development Bank (IDB)
 
 ---
