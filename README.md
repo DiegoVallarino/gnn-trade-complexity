@@ -24,7 +24,7 @@ The approach is tailored for **small open economies** under conditions of global
 
 ---
 
-## ⚙️ Requirements
+## Requirements
 
 Recommended Python version: `>=3.9`
 
@@ -94,7 +94,7 @@ For full methodology, see Appendix A of the paper.
 If you use this code, please cite the associated paper:
 
 ```
-Vallarino, D. (2025). Augmenting Trade Complexity Analysis with Deep Learning: An AI-Based Framework for Small Open Economies. Working Paper.
+Vallarino, D. (2025). Augmenting trade complexity analysis with deep learning: an AI-based framework for small open economies. Applied Economics Letters, 1–4. https://doi.org/10.1080/13504851.2025.2567618
 ```
 
 ---
